@@ -2,6 +2,27 @@
 
 本文档面向需要在登录微信的 Windows 电脑上读取微信 4.x 本地数据库的用户。
 
+## 重要提示：不要直接双击 exe 使用
+
+`wechat-cli.exe` 是命令行工具，不是桌面软件。直接双击时，Windows 会打开一个临时命令窗口，程序执行完就关闭，看起来就像“闪退”。
+
+正确方式是在 PowerShell 或命令提示符里运行。
+
+例如文件在 `D:\wechatcli`：
+
+```powershell
+cd /d D:\wechatcli
+.\wechat-cli.exe --version
+.\wechat-cli.exe init
+.\wechat-cli.exe sessions --limit 10 --format json
+```
+
+如果你把 `wechat-cli.exe` 放进了 PATH，也可以直接运行：
+
+```powershell
+wechat-cli --version
+```
+
 ## 推荐安装方式
 
 ### 方式一：使用 pipx 安装
@@ -32,15 +53,22 @@ python -m pip install -e .
 
 ### 方式三：使用发布页 exe
 
-当 GitHub Release 已发布 Windows 构建后，下载 `wechat-cli-windows-x64.zip`，解压后运行：
+当 GitHub Release 已发布 Windows 构建后，下载 `wechat-cli-windows-x64.zip`，解压后在 PowerShell 里运行：
 
 ```powershell
+cd /d D:\wechatcli
 .\wechat-cli.exe --version
 ```
 
 ## 初始化
 
 初始化必须在登录微信的 Windows 电脑上执行。请确保微信正在运行，然后打开 PowerShell：
+
+```powershell
+.\wechat-cli.exe init
+```
+
+如果你使用的是 pipx 或已加入 PATH，也可以运行：
 
 ```powershell
 wechat-cli init
@@ -66,19 +94,19 @@ wechat-cli init
 查看最近会话：
 
 ```powershell
-wechat-cli sessions --limit 10 --format json
+.\wechat-cli.exe sessions --limit 10 --format json
 ```
 
 读取指定聊天的时间段消息：
 
 ```powershell
-wechat-cli history "项目群" --start-time "2026-07-01 00:00:00" --end-time "2026-07-19 23:59:59" --limit 2000 --format json
+.\wechat-cli.exe history "项目群" --start-time "2026-07-01 00:00:00" --end-time "2026-07-19 23:59:59" --limit 2000 --format json
 ```
 
 搜索指定聊天：
 
 ```powershell
-wechat-cli search "截止日期" --chat "项目群" --start-time "2026-07-01" --end-time "2026-07-19" --format json
+.\wechat-cli.exe search "截止日期" --chat "项目群" --start-time "2026-07-01" --end-time "2026-07-19" --format json
 ```
 
 ## 与 AI 摘要工具分层
@@ -86,7 +114,7 @@ wechat-cli search "截止日期" --chat "项目群" --start-time "2026-07-01" --
 `wechat-cli` 只负责本地读取和 JSON 输出。上层 AI 摘要工具应通过命令行调用它，例如：
 
 ```powershell
-wechat-cli history "项目群" --start-time "2026-07-01" --end-time "2026-07-19" --format json
+.\wechat-cli.exe history "项目群" --start-time "2026-07-01" --end-time "2026-07-19" --format json
 ```
 
 然后再由上层工具调用大模型 API，生成会话摘要、待办事项和重要原文。
@@ -103,12 +131,16 @@ YANG-Baa-Baa/wechat-ai-summary
 
 ## 常见问题
 
+### 双击 exe 后窗口一闪而过
+
+这是命令行工具的正常表现。请打开 PowerShell，进入 exe 所在目录后运行命令。
+
 ### 找不到微信数据目录
 
 确认微信 4.x 已登录，并且本机存在 `xwechat_files` 数据目录。也可以手动指定：
 
 ```powershell
-wechat-cli init --db-dir "D:\\WeChatData\\xwechat_files\\账号\\db_storage"
+.\wechat-cli.exe init --db-dir "D:\\WeChatData\\xwechat_files\\账号\\db_storage"
 ```
 
 ### Weixin.exe 未运行
@@ -116,7 +148,7 @@ wechat-cli init --db-dir "D:\\WeChatData\\xwechat_files\\账号\\db_storage"
 先启动微信并登录，再执行：
 
 ```powershell
-wechat-cli init --force
+.\wechat-cli.exe init --force
 ```
 
 ### 权限不足
