@@ -15,6 +15,7 @@ from .common import (
     scan_memory_for_bare_keys,
     scan_memory_for_bare_wide_keys,
     scan_memory_for_keys,
+    scan_memory_for_salt_nearby_raw_keys,
     scan_memory_for_wide_keys,
 )
 
@@ -82,7 +83,7 @@ def _enum_regions(h):
 def _print_no_key_diagnostics(process_count, stats):
     print("\n[!] Windows 密钥扫描没有命中。")
     if process_count > 0 and sum(stats.values()) == 0:
-        print("    已找到 Weixin.exe 进程，但没有发现可验证的 SQLCipher key 候选字符串。")
+        print("    已找到 Weixin.exe 进程，但没有发现可验证的 SQLCipher key 候选。")
     print("    建议按顺序排查：")
     print("    1. 完全退出微信，再重新打开并登录，然后运行: .\\wechat-cli.exe init --force")
     print("    2. 使用 64 位 PowerShell，并以管理员身份运行。不要使用标题里带 (x86) 的 PowerShell。")
@@ -96,7 +97,8 @@ def _format_stats(stats):
         f"{stats['wrapped_ascii']} wrapped-ascii, "
         f"{stats['wrapped_utf16']} wrapped-utf16, "
         f"{stats['bare_ascii']} bare-ascii, "
-        f"{stats['bare_utf16']} bare-utf16 patterns"
+        f"{stats['bare_utf16']} bare-utf16, "
+        f"{stats['raw_near_salt']} raw-near-salt attempts"
     )
 
 
@@ -136,6 +138,7 @@ def extract_keys(db_dir, output_path, pid=None):
         "wrapped_utf16": 0,
         "bare_ascii": 0,
         "bare_utf16": 0,
+        "raw_near_salt": 0,
     }
     t0 = time.time()
 
@@ -173,6 +176,10 @@ def extract_keys(db_dir, output_path, pid=None):
                 stats["bare_utf16"] += scan_memory_for_bare_wide_keys(
                     data, bare_wide_hex_re, db_files, salt_to_dbs,
                     key_map, remaining_salts, base, pid_val, print,
+                )
+                stats["raw_near_salt"] += scan_memory_for_salt_nearby_raw_keys(
+                    data, db_files, salt_to_dbs, key_map,
+                    remaining_salts, base, pid_val, print,
                 )
 
                 if (reg_idx + 1) % 200 == 0:
