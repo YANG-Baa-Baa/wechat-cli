@@ -54,9 +54,64 @@ def collect_db_files(db_dir):
     return db_files, salt_to_dbs
 
 
+def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
+                 addr, pid, print_fn, source="ascii"):
+    hex_len = len(hex_str)
+
+    if hex_len == 96:
+        enc_key_hex = hex_str[:64]
+        salt_hex = hex_str[64:]
+        if salt_hex in remaining_salts:
+            enc_key = bytes.fromhex(enc_key_hex)
+            for rel, path, sz, s, page1 in db_files:
+                if s == salt_hex and verify_enc_key(enc_key, page1):
+                    key_map[salt_hex] = enc_key_hex
+                    remaining_salts.discard(salt_hex)
+                    dbs = salt_to_dbs[salt_hex]
+                    print_fn(f"\n  [FOUND] salt={salt_hex} ({source})")
+                    print_fn(f"    enc_key={enc_key_hex}")
+                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                    print_fn(f"    数据库: {', '.join(dbs)}")
+                    return True
+
+    elif hex_len == 64:
+        if not remaining_salts:
+            return False
+        enc_key_hex = hex_str
+        enc_key = bytes.fromhex(enc_key_hex)
+        for rel, path, sz, salt_hex_db, page1 in db_files:
+            if salt_hex_db in remaining_salts and verify_enc_key(enc_key, page1):
+                key_map[salt_hex_db] = enc_key_hex
+                remaining_salts.discard(salt_hex_db)
+                dbs = salt_to_dbs[salt_hex_db]
+                print_fn(f"\n  [FOUND] salt={salt_hex_db} ({source})")
+                print_fn(f"    enc_key={enc_key_hex}")
+                print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                print_fn(f"    数据库: {', '.join(dbs)}")
+                return True
+
+    elif hex_len > 96 and hex_len % 2 == 0:
+        enc_key_hex = hex_str[:64]
+        salt_hex = hex_str[-32:]
+        if salt_hex in remaining_salts:
+            enc_key = bytes.fromhex(enc_key_hex)
+            for rel, path, sz, s, page1 in db_files:
+                if s == salt_hex and verify_enc_key(enc_key, page1):
+                    key_map[salt_hex] = enc_key_hex
+                    remaining_salts.discard(salt_hex)
+                    dbs = salt_to_dbs[salt_hex]
+                    print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, long hex {hex_len})")
+                    print_fn(f"    enc_key={enc_key_hex}")
+                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                    print_fn(f"    数据库: {', '.join(dbs)}")
+                    return True
+
+    return False
+
+
 def scan_memory_for_keys(data, hex_re, db_files, salt_to_dbs, key_map,
                          remaining_salts, base_addr, pid, print_fn):
-    """扫描一段内存数据，匹配 hex 模式并验证密钥。
+    """扫描一段内存数据，匹配 ASCII hex 模式并验证密钥。
 
     返回本次扫描匹配到的 hex 模式数量。
     """
@@ -65,56 +120,26 @@ def scan_memory_for_keys(data, hex_re, db_files, salt_to_dbs, key_map,
         hex_str = m.group(1).decode()
         addr = base_addr + m.start()
         matches += 1
-        hex_len = len(hex_str)
+        _try_hex_key(
+            hex_str, db_files, salt_to_dbs, key_map,
+            remaining_salts, addr, pid, print_fn,
+        )
+    return matches
 
-        if hex_len == 96:
-            enc_key_hex = hex_str[:64]
-            salt_hex = hex_str[64:]
-            if salt_hex in remaining_salts:
-                enc_key = bytes.fromhex(enc_key_hex)
-                for rel, path, sz, s, page1 in db_files:
-                    if s == salt_hex and verify_enc_key(enc_key, page1):
-                        key_map[salt_hex] = enc_key_hex
-                        remaining_salts.discard(salt_hex)
-                        dbs = salt_to_dbs[salt_hex]
-                        print_fn(f"\n  [FOUND] salt={salt_hex}")
-                        print_fn(f"    enc_key={enc_key_hex}")
-                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                        print_fn(f"    数据库: {', '.join(dbs)}")
-                        break
 
-        elif hex_len == 64:
-            if not remaining_salts:
-                continue
-            enc_key_hex = hex_str
-            enc_key = bytes.fromhex(enc_key_hex)
-            for rel, path, sz, salt_hex_db, page1 in db_files:
-                if salt_hex_db in remaining_salts and verify_enc_key(enc_key, page1):
-                    key_map[salt_hex_db] = enc_key_hex
-                    remaining_salts.discard(salt_hex_db)
-                    dbs = salt_to_dbs[salt_hex_db]
-                    print_fn(f"\n  [FOUND] salt={salt_hex_db}")
-                    print_fn(f"    enc_key={enc_key_hex}")
-                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                    print_fn(f"    数据库: {', '.join(dbs)}")
-                    break
-
-        elif hex_len > 96 and hex_len % 2 == 0:
-            enc_key_hex = hex_str[:64]
-            salt_hex = hex_str[-32:]
-            if salt_hex in remaining_salts:
-                enc_key = bytes.fromhex(enc_key_hex)
-                for rel, path, sz, s, page1 in db_files:
-                    if s == salt_hex and verify_enc_key(enc_key, page1):
-                        key_map[salt_hex] = enc_key_hex
-                        remaining_salts.discard(salt_hex)
-                        dbs = salt_to_dbs[salt_hex]
-                        print_fn(f"\n  [FOUND] salt={salt_hex} (long hex {hex_len})")
-                        print_fn(f"    enc_key={enc_key_hex}")
-                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                        print_fn(f"    数据库: {', '.join(dbs)}")
-                        break
-
+def scan_memory_for_wide_keys(data, wide_hex_re, db_files, salt_to_dbs, key_map,
+                              remaining_salts, base_addr, pid, print_fn):
+    """扫描 UTF-16LE 形式的 x'hex' 字符串并验证密钥。"""
+    matches = 0
+    for m in wide_hex_re.finditer(data):
+        raw = m.group(1)
+        hex_str = raw.replace(b"\x00", b"").decode()
+        addr = base_addr + m.start()
+        matches += 1
+        _try_hex_key(
+            hex_str, db_files, salt_to_dbs, key_map,
+            remaining_salts, addr, pid, print_fn, source="utf-16le",
+        )
     return matches
 
 

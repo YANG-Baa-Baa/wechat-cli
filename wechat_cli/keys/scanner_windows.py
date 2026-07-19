@@ -8,7 +8,13 @@ import re
 import subprocess
 import time
 
-from .common import collect_db_files, scan_memory_for_keys, cross_verify_keys, save_results
+from .common import (
+    collect_db_files,
+    cross_verify_keys,
+    save_results,
+    scan_memory_for_keys,
+    scan_memory_for_wide_keys,
+)
 
 print = functools.partial(print, flush=True)
 
@@ -71,6 +77,18 @@ def _enum_regions(h):
     return regs
 
 
+def _print_no_key_diagnostics(process_count, ascii_matches, wide_matches):
+    print("\n[!] Windows 密钥扫描没有命中。")
+    if process_count > 0 and ascii_matches == 0 and wide_matches == 0:
+        print("    已找到 Weixin.exe 进程，但没有发现 ASCII 或 UTF-16LE 形式的 x'...' SQLCipher key 字符串。")
+    print("    建议按顺序排查：")
+    print("    1. 完全退出微信，再重新打开并登录，然后运行: .\\wechat-cli.exe init --force")
+    print("    2. 使用 64 位 PowerShell，并以管理员身份运行。不要使用标题里带 (x86) 的 PowerShell。")
+    print("    3. 确认运行的是微信 Windows 4.x，且当前账号已经完成登录和消息加载。")
+    print("    4. 如果仍然 0 patterns，说明当前微信版本可能改变了 key 在内存中的形态，需要更新扫描策略。")
+    print("    5. PowerShell 中文乱码可先执行: chcp 65001")
+
+
 def extract_keys(db_dir, output_path, pid=None):
     """提取 Windows 微信数据库密钥。
 
@@ -95,9 +113,11 @@ def extract_keys(db_dir, output_path, pid=None):
     pids = _get_pids() if pid is None else [(pid, 0)]
 
     hex_re = re.compile(b"x'([0-9a-fA-F]{64,192})'")
+    wide_hex_re = re.compile(b"x\x00'\x00((?:[0-9a-fA-F]\x00){64,192})'\x00")
     key_map = {}
     remaining_salts = set(salt_to_dbs.keys())
-    all_hex_matches = 0
+    ascii_matches = 0
+    wide_matches = 0
     t0 = time.time()
 
     for pid_val, mem_kb in pids:
@@ -119,8 +139,12 @@ def extract_keys(db_dir, output_path, pid=None):
                 if not data:
                     continue
 
-                all_hex_matches += scan_memory_for_keys(
+                ascii_matches += scan_memory_for_keys(
                     data, hex_re, db_files, salt_to_dbs,
+                    key_map, remaining_salts, base, pid_val, print,
+                )
+                wide_matches += scan_memory_for_wide_keys(
+                    data, wide_hex_re, db_files, salt_to_dbs,
                     key_map, remaining_salts, base, pid_val, print,
                 )
 
@@ -129,7 +153,7 @@ def extract_keys(db_dir, output_path, pid=None):
                     progress = scanned_bytes / total_bytes * 100 if total_bytes else 100
                     print(
                         f"  [{progress:.1f}%] {len(key_map)}/{len(salt_to_dbs)} salts matched, "
-                        f"{all_hex_matches} hex patterns, {elapsed:.1f}s"
+                        f"{ascii_matches} ascii patterns, {wide_matches} utf16 patterns, {elapsed:.1f}s"
                     )
         finally:
             kernel32.CloseHandle(h)
@@ -139,7 +163,12 @@ def extract_keys(db_dir, output_path, pid=None):
             break
 
     elapsed = time.time() - t0
-    print(f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, {all_hex_matches} hex模式")
+    print(
+        f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, "
+        f"{ascii_matches} ascii模式, {wide_matches} utf16模式"
+    )
 
     cross_verify_keys(db_files, salt_to_dbs, key_map, print)
+    if not key_map:
+        _print_no_key_diagnostics(len(pids), ascii_matches, wide_matches)
     return save_results(db_files, salt_to_dbs, key_map, output_path, print)
