@@ -3,8 +3,6 @@
 import os
 import sys
 
-from click.exceptions import Exit
-
 from wechat_cli.main import cli
 
 
@@ -16,10 +14,6 @@ if __name__ == "__main__":
     pause = _should_pause_on_exit()
     try:
         cli()
-    except (Exit, SystemExit) as exc:
-        if pause:
-            input("\nPress Enter to exit...")
-        raise exc
     finally:
         if pause:
             input("\nPress Enter to exit...")
