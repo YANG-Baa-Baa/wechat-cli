@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import sys
 
 import click
@@ -49,7 +50,9 @@ def init(db_dir, force):
         key_map = extract_keys(db_dir, KEYS_FILE)
     except RuntimeError as e:
         click.echo(f"\n[!] 密钥提取失败: {e}", err=True)
-        if "sudo" not in str(e).lower():
+        if platform.system().lower() == "windows":
+            click.echo("提示: 请使用 64 位管理员 PowerShell，重启微信后执行 init --force；若仍失败，可能需要更新 Windows key 扫描策略。", err=True)
+        elif "sudo" not in str(e).lower():
             click.echo("提示: macOS/Linux 可能需要 sudo 权限", err=True)
         sys.exit(1)
     except Exception as e:
