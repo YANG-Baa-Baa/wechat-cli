@@ -102,6 +102,34 @@ def _verify_candidate_key(enc_key, page1):
     return ""
 
 
+def _record_found_key(enc_key_hex, salt_hex, db_files, salt_to_dbs, key_map,
+                      remaining_salts, addr, pid, print_fn, source, verified_by):
+    key_map[salt_hex] = enc_key_hex
+    remaining_salts.discard(salt_hex)
+    dbs = salt_to_dbs[salt_hex]
+    print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, verified={verified_by})")
+    print_fn(f"    enc_key={enc_key_hex}")
+    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+    print_fn(f"    数据库: {', '.join(dbs)}")
+
+
+def _try_raw_key(enc_key, db_files, salt_to_dbs, key_map, remaining_salts,
+                 addr, pid, print_fn, source):
+    if len(enc_key) != KEY_SZ or enc_key == b"\x00" * KEY_SZ:
+        return False
+    enc_key_hex = enc_key.hex()
+    for rel, path, sz, salt_hex_db, page1 in db_files:
+        if salt_hex_db in remaining_salts:
+            verified_by = _verify_candidate_key(enc_key, page1)
+            if verified_by:
+                _record_found_key(
+                    enc_key_hex, salt_hex_db, db_files, salt_to_dbs, key_map,
+                    remaining_salts, addr, pid, print_fn, source, verified_by,
+                )
+                return True
+    return False
+
+
 def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
                  addr, pid, print_fn, source="ascii"):
     hex_len = len(hex_str)
@@ -115,32 +143,19 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
                 if s == salt_hex:
                     verified_by = _verify_candidate_key(enc_key, page1)
                     if verified_by:
-                        key_map[salt_hex] = enc_key_hex
-                        remaining_salts.discard(salt_hex)
-                        dbs = salt_to_dbs[salt_hex]
-                        print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, verified={verified_by})")
-                        print_fn(f"    enc_key={enc_key_hex}")
-                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                        print_fn(f"    数据库: {', '.join(dbs)}")
+                        _record_found_key(
+                            enc_key_hex, salt_hex, db_files, salt_to_dbs, key_map,
+                            remaining_salts, addr, pid, print_fn, source, verified_by,
+                        )
                         return True
 
     elif hex_len == 64:
         if not remaining_salts:
             return False
-        enc_key_hex = hex_str
-        enc_key = bytes.fromhex(enc_key_hex)
-        for rel, path, sz, salt_hex_db, page1 in db_files:
-            if salt_hex_db in remaining_salts:
-                verified_by = _verify_candidate_key(enc_key, page1)
-                if verified_by:
-                    key_map[salt_hex_db] = enc_key_hex
-                    remaining_salts.discard(salt_hex_db)
-                    dbs = salt_to_dbs[salt_hex_db]
-                    print_fn(f"\n  [FOUND] salt={salt_hex_db} ({source}, verified={verified_by})")
-                    print_fn(f"    enc_key={enc_key_hex}")
-                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                    print_fn(f"    数据库: {', '.join(dbs)}")
-                    return True
+        return _try_raw_key(
+            bytes.fromhex(hex_str), db_files, salt_to_dbs, key_map,
+            remaining_salts, addr, pid, print_fn, source,
+        )
 
     elif hex_len > 96 and hex_len % 2 == 0:
         enc_key_hex = hex_str[:64]
@@ -151,13 +166,11 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
                 if s == salt_hex:
                     verified_by = _verify_candidate_key(enc_key, page1)
                     if verified_by:
-                        key_map[salt_hex] = enc_key_hex
-                        remaining_salts.discard(salt_hex)
-                        dbs = salt_to_dbs[salt_hex]
-                        print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, long hex {hex_len}, verified={verified_by})")
-                        print_fn(f"    enc_key={enc_key_hex}")
-                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                        print_fn(f"    数据库: {', '.join(dbs)}")
+                        _record_found_key(
+                            enc_key_hex, salt_hex, db_files, salt_to_dbs, key_map,
+                            remaining_salts, addr, pid, print_fn,
+                            f"{source}, long hex {hex_len}", verified_by,
+                        )
                         return True
 
     return False
@@ -223,6 +236,34 @@ def scan_memory_for_bare_wide_keys(data, bare_wide_hex_re, db_files, salt_to_dbs
             remaining_salts, addr, pid, print_fn, source="bare-utf-16le",
         )
     return matches
+
+
+def scan_memory_for_salt_nearby_raw_keys(data, db_files, salt_to_dbs, key_map,
+                                         remaining_salts, base_addr, pid, print_fn,
+                                         window=96):
+    """寻找数据库 salt 原始字节，并在附近尝试 32 字节 raw key 候选。"""
+    attempts = 0
+    salts = [(bytes.fromhex(salt_hex), salt_hex) for salt_hex in remaining_salts]
+    for salt, salt_hex in salts:
+        start = 0
+        while True:
+            pos = data.find(salt, start)
+            if pos < 0:
+                break
+            start = pos + 1
+            lower = max(0, pos - window)
+            upper = min(len(data), pos + SALT_SZ + window)
+            for key_pos in range(lower, upper - KEY_SZ + 1):
+                if key_pos <= pos < key_pos + KEY_SZ:
+                    continue
+                candidate = data[key_pos:key_pos + KEY_SZ]
+                attempts += 1
+                if _try_raw_key(
+                    candidate, db_files, salt_to_dbs, key_map, remaining_salts,
+                    base_addr + key_pos, pid, print_fn, source=f"raw-near-salt:{salt_hex}",
+                ):
+                    return attempts
+    return attempts
 
 
 def cross_verify_keys(db_files, salt_to_dbs, key_map, print_fn):
