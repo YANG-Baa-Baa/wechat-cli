@@ -8,13 +8,19 @@
 
 正确方式是在 PowerShell 或命令提示符里运行。
 
-例如文件在 `D:\wechatcli`：
+例如文件在 `D:\wechatcli`，请在 PowerShell 中运行：
 
 ```powershell
-cd /d D:\wechatcli
+Set-Location D:\wechatcli
 .\wechat-cli.exe --version
 .\wechat-cli.exe init
 .\wechat-cli.exe sessions --limit 10 --format json
+```
+
+如果中文显示乱码，可先运行：
+
+```powershell
+chcp 65001
 ```
 
 如果你把 `wechat-cli.exe` 放进了 PATH，也可以直接运行：
@@ -47,7 +53,7 @@ wechat-cli --version
 
 ```powershell
 git clone https://github.com/YANG-Baa-Baa/wechat-cli.git
-cd wechat-cli
+Set-Location wechat-cli
 python -m pip install -e .
 ```
 
@@ -56,7 +62,7 @@ python -m pip install -e .
 当 GitHub Release 已发布 Windows 构建后，下载 `wechat-cli-windows-x64.zip`，解压后在 PowerShell 里运行：
 
 ```powershell
-cd /d D:\wechatcli
+Set-Location D:\wechatcli
 .\wechat-cli.exe --version
 ```
 
@@ -134,6 +140,23 @@ YANG-Baa-Baa/wechat-ai-summary
 ### 双击 exe 后窗口一闪而过
 
 这是命令行工具的正常表现。请打开 PowerShell，进入 exe 所在目录后运行命令。
+
+### 输出中文乱码
+
+在 PowerShell 里先运行：
+
+```powershell
+chcp 65001
+```
+
+### 已找到 Weixin.exe，但提取到 0 个密钥
+
+请按顺序尝试：
+
+1. 完全退出微信，再重新打开并登录
+2. 使用 64 位 PowerShell，以管理员身份运行，不要使用标题带 `(x86)` 的 PowerShell
+3. 执行：`.\wechat-cli.exe init --force`
+4. 如果仍然显示 `0 hex patterns`，说明当前微信版本可能改变了 key 在内存中的形态，需要更新扫描策略
 
 ### 找不到微信数据目录
 
