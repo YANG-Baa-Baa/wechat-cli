@@ -1,0 +1,60 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build executable
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -OutputDir artifacts
+
+      - name: Smoke test
+        shell: pwsh
+        run: .\artifacts\wechat-cli.exe --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-cli-windows-x64
+          path: artifacts/wechat-cli.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wechat-cli-windows-x64
+          path: release
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path release\wechat-cli.exe -DestinationPath wechat-cli-windows-x64.zip -Force
+
+      - name: Publish GitHub Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wechat-cli-windows-x64.zip
