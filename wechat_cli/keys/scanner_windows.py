@@ -12,6 +12,8 @@ from .common import (
     collect_db_files,
     cross_verify_keys,
     save_results,
+    scan_memory_for_bare_keys,
+    scan_memory_for_bare_wide_keys,
     scan_memory_for_keys,
     scan_memory_for_wide_keys,
 )
@@ -77,16 +79,25 @@ def _enum_regions(h):
     return regs
 
 
-def _print_no_key_diagnostics(process_count, ascii_matches, wide_matches):
+def _print_no_key_diagnostics(process_count, stats):
     print("\n[!] Windows 密钥扫描没有命中。")
-    if process_count > 0 and ascii_matches == 0 and wide_matches == 0:
-        print("    已找到 Weixin.exe 进程，但没有发现 ASCII 或 UTF-16LE 形式的 x'...' SQLCipher key 字符串。")
+    if process_count > 0 and sum(stats.values()) == 0:
+        print("    已找到 Weixin.exe 进程，但没有发现可验证的 SQLCipher key 候选字符串。")
     print("    建议按顺序排查：")
     print("    1. 完全退出微信，再重新打开并登录，然后运行: .\\wechat-cli.exe init --force")
     print("    2. 使用 64 位 PowerShell，并以管理员身份运行。不要使用标题里带 (x86) 的 PowerShell。")
     print("    3. 确认运行的是微信 Windows 4.x，且当前账号已经完成登录和消息加载。")
-    print("    4. 如果仍然 0 patterns，说明当前微信版本可能改变了 key 在内存中的形态，需要更新扫描策略。")
+    print("    4. 如果仍然没有找到密钥，说明当前微信版本可能改变了 key 在内存中的形态，需要继续更新扫描策略。")
     print("    5. PowerShell 中文乱码可先执行: chcp 65001")
+
+
+def _format_stats(stats):
+    return (
+        f"{stats['wrapped_ascii']} wrapped-ascii, "
+        f"{stats['wrapped_utf16']} wrapped-utf16, "
+        f"{stats['bare_ascii']} bare-ascii, "
+        f"{stats['bare_utf16']} bare-utf16 patterns"
+    )
 
 
 def extract_keys(db_dir, output_path, pid=None):
@@ -114,10 +125,18 @@ def extract_keys(db_dir, output_path, pid=None):
 
     hex_re = re.compile(b"x'([0-9a-fA-F]{64,192})'")
     wide_hex_re = re.compile(b"x\x00'\x00((?:[0-9a-fA-F]\x00){64,192})'\x00")
+    bare_hex_re = re.compile(b"(?<![0-9a-fA-F])([0-9a-fA-F]{64}|[0-9a-fA-F]{96})(?![0-9a-fA-F])")
+    bare_wide_hex_re = re.compile(
+        b"(?<![0-9a-fA-F]\x00)((?:[0-9a-fA-F]\x00){64}|(?:[0-9a-fA-F]\x00){96})(?![0-9a-fA-F]\x00)"
+    )
     key_map = {}
     remaining_salts = set(salt_to_dbs.keys())
-    ascii_matches = 0
-    wide_matches = 0
+    stats = {
+        "wrapped_ascii": 0,
+        "wrapped_utf16": 0,
+        "bare_ascii": 0,
+        "bare_utf16": 0,
+    }
     t0 = time.time()
 
     for pid_val, mem_kb in pids:
@@ -139,12 +158,20 @@ def extract_keys(db_dir, output_path, pid=None):
                 if not data:
                     continue
 
-                ascii_matches += scan_memory_for_keys(
+                stats["wrapped_ascii"] += scan_memory_for_keys(
                     data, hex_re, db_files, salt_to_dbs,
                     key_map, remaining_salts, base, pid_val, print,
                 )
-                wide_matches += scan_memory_for_wide_keys(
+                stats["wrapped_utf16"] += scan_memory_for_wide_keys(
                     data, wide_hex_re, db_files, salt_to_dbs,
+                    key_map, remaining_salts, base, pid_val, print,
+                )
+                stats["bare_ascii"] += scan_memory_for_bare_keys(
+                    data, bare_hex_re, db_files, salt_to_dbs,
+                    key_map, remaining_salts, base, pid_val, print,
+                )
+                stats["bare_utf16"] += scan_memory_for_bare_wide_keys(
+                    data, bare_wide_hex_re, db_files, salt_to_dbs,
                     key_map, remaining_salts, base, pid_val, print,
                 )
 
@@ -153,7 +180,7 @@ def extract_keys(db_dir, output_path, pid=None):
                     progress = scanned_bytes / total_bytes * 100 if total_bytes else 100
                     print(
                         f"  [{progress:.1f}%] {len(key_map)}/{len(salt_to_dbs)} salts matched, "
-                        f"{ascii_matches} ascii patterns, {wide_matches} utf16 patterns, {elapsed:.1f}s"
+                        f"{_format_stats(stats)}, {elapsed:.1f}s"
                     )
         finally:
             kernel32.CloseHandle(h)
@@ -163,12 +190,9 @@ def extract_keys(db_dir, output_path, pid=None):
             break
 
     elapsed = time.time() - t0
-    print(
-        f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, "
-        f"{ascii_matches} ascii模式, {wide_matches} utf16模式"
-    )
+    print(f"\n扫描完成: {elapsed:.1f}s, {len(pids)} 个进程, {_format_stats(stats)}")
 
     cross_verify_keys(db_files, salt_to_dbs, key_map, print)
     if not key_map:
-        _print_no_key_diagnostics(len(pids), ascii_matches, wide_matches)
+        _print_no_key_diagnostics(len(pids), stats)
     return save_results(db_files, salt_to_dbs, key_map, output_path, print)

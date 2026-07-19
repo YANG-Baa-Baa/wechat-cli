@@ -111,10 +111,7 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
 
 def scan_memory_for_keys(data, hex_re, db_files, salt_to_dbs, key_map,
                          remaining_salts, base_addr, pid, print_fn):
-    """扫描一段内存数据，匹配 ASCII hex 模式并验证密钥。
-
-    返回本次扫描匹配到的 hex 模式数量。
-    """
+    """扫描一段内存数据，匹配 ASCII x'hex' 模式并验证密钥。"""
     matches = 0
     for m in hex_re.finditer(data):
         hex_str = m.group(1).decode()
@@ -123,6 +120,21 @@ def scan_memory_for_keys(data, hex_re, db_files, salt_to_dbs, key_map,
         _try_hex_key(
             hex_str, db_files, salt_to_dbs, key_map,
             remaining_salts, addr, pid, print_fn,
+        )
+    return matches
+
+
+def scan_memory_for_bare_keys(data, bare_hex_re, db_files, salt_to_dbs, key_map,
+                              remaining_salts, base_addr, pid, print_fn):
+    """扫描裸 64/96 位 hex 字符串并验证密钥。"""
+    matches = 0
+    for m in bare_hex_re.finditer(data):
+        hex_str = m.group(1).decode()
+        addr = base_addr + m.start(1)
+        matches += 1
+        _try_hex_key(
+            hex_str, db_files, salt_to_dbs, key_map,
+            remaining_salts, addr, pid, print_fn, source="bare-ascii",
         )
     return matches
 
@@ -139,6 +151,22 @@ def scan_memory_for_wide_keys(data, wide_hex_re, db_files, salt_to_dbs, key_map,
         _try_hex_key(
             hex_str, db_files, salt_to_dbs, key_map,
             remaining_salts, addr, pid, print_fn, source="utf-16le",
+        )
+    return matches
+
+
+def scan_memory_for_bare_wide_keys(data, bare_wide_hex_re, db_files, salt_to_dbs,
+                                   key_map, remaining_salts, base_addr, pid, print_fn):
+    """扫描 UTF-16LE 形式的裸 64/96 位 hex 字符串并验证密钥。"""
+    matches = 0
+    for m in bare_wide_hex_re.finditer(data):
+        raw = m.group(1)
+        hex_str = raw.replace(b"\x00", b"").decode()
+        addr = base_addr + m.start(1)
+        matches += 1
+        _try_hex_key(
+            hex_str, db_files, salt_to_dbs, key_map,
+            remaining_salts, addr, pid, print_fn, source="bare-utf-16le",
         )
     return matches
 
