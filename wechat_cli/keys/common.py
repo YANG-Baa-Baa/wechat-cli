@@ -11,9 +11,13 @@ import os
 import re
 import struct
 
+from Crypto.Cipher import AES
+
 PAGE_SZ = 4096
 KEY_SZ = 32
 SALT_SZ = 16
+RESERVE_SZ = 80
+SQLITE_HDR = b"SQLite format 3\x00"
 
 
 def verify_enc_key(enc_key, db_page1):
@@ -26,6 +30,42 @@ def verify_enc_key(enc_key, db_page1):
     hm = hmac_mod.new(mac_key, hmac_data, hashlib.sha512)
     hm.update(struct.pack("<I", 1))
     return hm.digest() == stored_hmac
+
+
+def verify_enc_key_by_plaintext(enc_key, db_page1):
+    """通过解密第一页后的 SQLite 页头字段验证 enc_key。
+
+    这是 HMAC 校验的补充，用于兼容 HMAC 参数可能变化的 SQLCipher 变体。
+    """
+    try:
+        iv = db_page1[PAGE_SZ - RESERVE_SZ: PAGE_SZ - RESERVE_SZ + 16]
+        encrypted = db_page1[SALT_SZ: PAGE_SZ - RESERVE_SZ]
+        decrypted = AES.new(enc_key, AES.MODE_CBC, iv).decrypt(encrypted)
+    except Exception:
+        return False
+
+    page = SQLITE_HDR + decrypted + b"\x00" * RESERVE_SZ
+    if not page.startswith(SQLITE_HDR):
+        return False
+
+    page_size = struct.unpack(">H", page[16:18])[0]
+    if page_size == 1:
+        page_size = 65536
+    if page_size != PAGE_SZ:
+        return False
+    if page[18] not in (1, 2) or page[19] not in (1, 2):
+        return False
+    if page[20] != 0:
+        return False
+    if page[21:24] != b"\x40\x20\x20":
+        return False
+    schema_format = struct.unpack(">I", page[44:48])[0]
+    if schema_format not in (0, 1, 2, 3, 4):
+        return False
+    text_encoding = struct.unpack(">I", page[56:60])[0]
+    if text_encoding not in (0, 1, 2, 3):
+        return False
+    return True
 
 
 def collect_db_files(db_dir):
@@ -54,6 +94,14 @@ def collect_db_files(db_dir):
     return db_files, salt_to_dbs
 
 
+def _verify_candidate_key(enc_key, page1):
+    if verify_enc_key(enc_key, page1):
+        return "hmac"
+    if verify_enc_key_by_plaintext(enc_key, page1):
+        return "plaintext"
+    return ""
+
+
 def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
                  addr, pid, print_fn, source="ascii"):
     hex_len = len(hex_str)
@@ -64,15 +112,17 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
         if salt_hex in remaining_salts:
             enc_key = bytes.fromhex(enc_key_hex)
             for rel, path, sz, s, page1 in db_files:
-                if s == salt_hex and verify_enc_key(enc_key, page1):
-                    key_map[salt_hex] = enc_key_hex
-                    remaining_salts.discard(salt_hex)
-                    dbs = salt_to_dbs[salt_hex]
-                    print_fn(f"\n  [FOUND] salt={salt_hex} ({source})")
-                    print_fn(f"    enc_key={enc_key_hex}")
-                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                    print_fn(f"    数据库: {', '.join(dbs)}")
-                    return True
+                if s == salt_hex:
+                    verified_by = _verify_candidate_key(enc_key, page1)
+                    if verified_by:
+                        key_map[salt_hex] = enc_key_hex
+                        remaining_salts.discard(salt_hex)
+                        dbs = salt_to_dbs[salt_hex]
+                        print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, verified={verified_by})")
+                        print_fn(f"    enc_key={enc_key_hex}")
+                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                        print_fn(f"    数据库: {', '.join(dbs)}")
+                        return True
 
     elif hex_len == 64:
         if not remaining_salts:
@@ -80,15 +130,17 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
         enc_key_hex = hex_str
         enc_key = bytes.fromhex(enc_key_hex)
         for rel, path, sz, salt_hex_db, page1 in db_files:
-            if salt_hex_db in remaining_salts and verify_enc_key(enc_key, page1):
-                key_map[salt_hex_db] = enc_key_hex
-                remaining_salts.discard(salt_hex_db)
-                dbs = salt_to_dbs[salt_hex_db]
-                print_fn(f"\n  [FOUND] salt={salt_hex_db} ({source})")
-                print_fn(f"    enc_key={enc_key_hex}")
-                print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                print_fn(f"    数据库: {', '.join(dbs)}")
-                return True
+            if salt_hex_db in remaining_salts:
+                verified_by = _verify_candidate_key(enc_key, page1)
+                if verified_by:
+                    key_map[salt_hex_db] = enc_key_hex
+                    remaining_salts.discard(salt_hex_db)
+                    dbs = salt_to_dbs[salt_hex_db]
+                    print_fn(f"\n  [FOUND] salt={salt_hex_db} ({source}, verified={verified_by})")
+                    print_fn(f"    enc_key={enc_key_hex}")
+                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                    print_fn(f"    数据库: {', '.join(dbs)}")
+                    return True
 
     elif hex_len > 96 and hex_len % 2 == 0:
         enc_key_hex = hex_str[:64]
@@ -96,15 +148,17 @@ def _try_hex_key(hex_str, db_files, salt_to_dbs, key_map, remaining_salts,
         if salt_hex in remaining_salts:
             enc_key = bytes.fromhex(enc_key_hex)
             for rel, path, sz, s, page1 in db_files:
-                if s == salt_hex and verify_enc_key(enc_key, page1):
-                    key_map[salt_hex] = enc_key_hex
-                    remaining_salts.discard(salt_hex)
-                    dbs = salt_to_dbs[salt_hex]
-                    print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, long hex {hex_len})")
-                    print_fn(f"    enc_key={enc_key_hex}")
-                    print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
-                    print_fn(f"    数据库: {', '.join(dbs)}")
-                    return True
+                if s == salt_hex:
+                    verified_by = _verify_candidate_key(enc_key, page1)
+                    if verified_by:
+                        key_map[salt_hex] = enc_key_hex
+                        remaining_salts.discard(salt_hex)
+                        dbs = salt_to_dbs[salt_hex]
+                        print_fn(f"\n  [FOUND] salt={salt_hex} ({source}, long hex {hex_len}, verified={verified_by})")
+                        print_fn(f"    enc_key={enc_key_hex}")
+                        print_fn(f"    PID={pid} 地址: 0x{addr:016X}")
+                        print_fn(f"    数据库: {', '.join(dbs)}")
+                        return True
 
     return False
 
@@ -182,9 +236,10 @@ def cross_verify_keys(db_files, salt_to_dbs, key_map, print_fn):
             if s == salt_hex:
                 for known_salt, known_key_hex in key_map.items():
                     enc_key = bytes.fromhex(known_key_hex)
-                    if verify_enc_key(enc_key, page1):
+                    verified_by = _verify_candidate_key(enc_key, page1)
+                    if verified_by:
                         key_map[salt_hex] = known_key_hex
-                        print_fn(f"  [CROSS] salt={salt_hex} 可用 key from salt={known_salt}")
+                        print_fn(f"  [CROSS] salt={salt_hex} 可用 key from salt={known_salt} (verified={verified_by})")
                         missing_salts.discard(salt_hex)
                 break
 
